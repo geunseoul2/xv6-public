@@ -48,7 +48,14 @@ struct proc {
   int killed;                  // If non-zero, have been killed
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
-  char name[16];               // Process name (debugging)
+  char name[16];               // Process name (debugging)\
+
+  int nice;                    // Process priority
+  uint weight;                 // weight of process
+  uint timeslice;              // total given time slice
+  uint vruntime;               // virtual runtime
+  uint runtime;                // total runtime
+
 };
 
 // Process memory is laid out contiguously, low addresses first:

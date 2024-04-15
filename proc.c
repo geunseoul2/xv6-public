@@ -88,6 +88,11 @@ allocproc(void)
 found:
   p->state = EMBRYO;
   p->pid = nextpid++;
+  p->nice = 20; // default nice value
+  p->weight = 1024; // default weight value
+  p->timeslice = 0; // default timeslice value
+  p->vruntime = 0; // default vruntime value
+  p->runtime = 0; // default runtime value
 
   release(&ptable.lock);
 
@@ -215,6 +220,11 @@ fork(void)
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
+  np->nice = curproc->nice; // inherit nice value from parent
+  np->weight = curproc->weight; // inherit weight from parent
+  np->runtime= curproc->runtime; // inherit timeslice from parent
+  np->vruntime = curproc->vruntime; // inherit vruntime from parent
+  np->timeslice = 0; // default timeslice value
 
   release(&ptable.lock);
 
@@ -315,33 +325,46 @@ wait(void)
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
-//  - choose a process to run
-//  - swtch to start running that process
-//  - eventually that process transfers control
+//  - Choose a process to run
+//  - Switch to start running that process
+//  - Eventually that process transfers control
 //      via swtch back to the scheduler.
 void
 scheduler(void)
 {
   struct proc *p;
+  struct proc *min_proc = 0;
+  uint min_vruntime = 0xFFFFFFFF;
+  uint total_weight = 0;
   struct cpu *c = mycpu();
   c->proc = 0;
-  
+  //initialize min_vruntime to the first process's vruntime
   for(;;){
     // Enable interrupts on this processor.
     sti();
 
-    // Loop over process table looking for process to run.
+    // Find the process with the minimum vruntime
     acquire(&ptable.lock);
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
       if(p->state != RUNNABLE)
         continue;
+      if(p->vruntime < min_vruntime){
+        min_vruntime = p->vruntime;
+        min_proc = p;
+      }
+      total_weight += p->weight;
+    }
 
+    if(min_proc != 0){
+      p = min_proc;
       // Switch to chosen process.  It is the process's job
       // to release ptable.lock and then reacquire it
       // before jumping back to us.
       c->proc = p;
       switchuvm(p);
       p->state = RUNNING;
+      // set timeslice
+      p->timeslice = 1000 * (10 * p->weight / (total_weight-p->weight)); // 10tick latency
 
       swtch(&(c->scheduler), p->context);
       switchkvm();
@@ -349,11 +372,15 @@ scheduler(void)
       // Process is done running for now.
       // It should have changed its p->state before coming back.
       c->proc = 0;
+      total_weight = 0;
+      min_vruntime = 0xFFFFFFFF;
+      min_proc = 0;
     }
-    release(&ptable.lock);
 
+    release(&ptable.lock);
   }
 }
+
 
 // Enter scheduler.  Must hold only ptable.lock
 // and have changed proc->state. Saves and restores
@@ -458,10 +485,22 @@ static void
 wakeup1(void *chan)
 {
   struct proc *p;
+  int run_flag = 0;
+
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(p->state == RUNNABLE) {
+      run_flag = 1;
+      break;
+    }
+  }
 
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
-    if(p->state == SLEEPING && p->chan == chan)
+    if(p->state == SLEEPING && p->chan == chan){
       p->state = RUNNABLE;
+      // Update vruntime when the process is woken up
+      if(run_flag == 1) p->vruntime = 1000 * (weight[20] / p->weight); // Update vruntime
+      else p->vruntime = 0;
+    }
 }
 
 // Wake up all processes sleeping on chan.
@@ -495,6 +534,51 @@ kill(int pid)
   release(&ptable.lock);
   return -1;
 }
+
+//prints out process information (name, pid, state, and prioirty)
+void
+ps(int pid)
+{
+  static char *states[] = {
+  [UNUSED]    "UNUSED  ",
+  [EMBRYO]    "EMBRYO  ",
+  [SLEEPING]  "SLEEPING",
+  [RUNNABLE]  "RUNNABLE",
+  [RUNNING]   "RUNNING ",
+  [ZOMBIE]    "ZOMBIE  "
+  };
+  struct proc *p;
+  uint total_ticks;
+
+  //if the pid is 0, print out all processes' info
+  if(pid == 0)
+  {
+    acquire(&tickslock);
+    total_ticks = ticks;
+    release(&tickslock);
+    cprintf("name\tpid\tstate\tpriority\truntime/weight\truntime\tvruntime\ttick %d\n", total_ticks*1000);
+    cprintf("%-10s %-5s %-10s %-8s %-15s %-8s %-8s %-6d\n", "Name", "PID", "State", "Priority", "Runtime/Weight", "Runtime", "Vruntime", total_ticks);
+    for(p = ptable.proc; p< &ptable.proc[NPROC]; p++)
+    {
+      if(p->state == UNUSED) continue;
+      cprintf("%s\t%d\t%s\t%d\n", p->name, p->pid, states[p->state], p->nice);
+    }
+  }
+  //print out the process info of the given pid
+  else
+  {
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+    {
+      if(p->pid == pid)
+      {
+        cprintf("name\tpid\tstate\tpriority\n");
+        cprintf("%s\t%d\t%s\t%d\n", p->name, p->pid, states[p->state], p->nice);
+        break;
+      }
+    }
+  }
+}
+
 
 //PAGEBREAK: 36
 // Print a process listing to console.  For debugging.

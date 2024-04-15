@@ -47,20 +47,25 @@ trap(struct trapframe *tf)
   }
 
   switch(tf->trapno){
-  case T_IRQ0 + IRQ_TIMER:
+  case T_IRQ0 + IRQ_TIMER: // Timer interrupt
     if(cpuid() == 0){
       acquire(&tickslock);
       ticks++;
       wakeup(&ticks);
       release(&tickslock);
     }
+    //update runtime and vruntime
+    if(myproc() && myproc()->state == RUNNING){
+      myproc()->runtime += 1000; // Increment runtime by 1 ms
+      myproc()->vruntime += myproc()->runtime * 1024 / myproc()->weight; // Update vruntime
+    }
     lapiceoi();
     break;
-  case T_IRQ0 + IRQ_IDE:
+  case T_IRQ0 + IRQ_IDE: // IDE interrupt
     ideintr();
     lapiceoi();
     break;
-  case T_IRQ0 + IRQ_IDE+1:
+  case T_IRQ0 + IRQ_IDE+1: // Bochs generates spurious IDE1 interrupts.
     // Bochs generates spurious IDE1 interrupts.
     break;
   case T_IRQ0 + IRQ_KBD:
@@ -102,9 +107,9 @@ trap(struct trapframe *tf)
 
   // Force process to give up CPU on clock tick.
   // If interrupts were on while locks held, would need to check nlock.
-  if(myproc() && myproc()->state == RUNNING &&
-     tf->trapno == T_IRQ0+IRQ_TIMER)
-    yield();
+  if(myproc() && myproc()->state == RUNNING && tf->trapno == T_IRQ0+IRQ_TIMER) {
+    if(myproc()->runtime >= myproc()->timeslice) yield();  // Yield if runtime exceeds timeslice
+  }
 
   // Check if the process has been killed since we yielded
   if(myproc() && myproc()->killed && (tf->cs&3) == DPL_USER)
