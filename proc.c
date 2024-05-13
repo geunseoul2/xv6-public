@@ -20,6 +20,15 @@ extern void trapret(void);
 
 static void wakeup1(void *chan);
 
+int weight[40] = {88761, 71755, 56483, 46273, 36291,
+                  29154, 23254, 18705, 14949, 11916,
+                  9548, 7620, 6100, 4904, 3906,
+                  3121, 2501, 1991, 1586, 1277,
+                  1024, 820, 655, 526, 423,
+                  335, 272, 215, 172, 137,
+                  110, 87, 70, 56, 45,
+                  36, 29, 23, 18};
+
 void
 pinit(void)
 {
@@ -355,26 +364,36 @@ scheduler(void)
       total_weight += p->weight;
     }
 
-    if(min_proc != 0){
-      p = min_proc;
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
-      c->proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
-      // set timeslice
-      p->timeslice = 1000 * (10 * p->weight / (total_weight-p->weight)); // 10tick latency
+    while(min_proc != 0){
+        p = min_proc;
+        // Switch to chosen process.  It is the process's job
+        // to release ptable.lock and then reacquire it
+        // before jumping back to us.
+        c->proc = p;
+        switchuvm(p); //
+        p->state = RUNNING;
+        // set timeslice
+        p->timeslice = 1000 * (10 * p->weight / (total_weight-p->weight)); // 10tick latency
 
-      swtch(&(c->scheduler), p->context);
-      switchkvm();
+        swtch(&(c->scheduler), p->context);
+        switchkvm();
 
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
-      c->proc = 0;
-      total_weight = 0;
-      min_vruntime = 0xFFFFFFFF;
-      min_proc = 0;
+        // Process is done running for now.
+        // It should have changed its p->state before coming back.
+        c->proc = 0;
+        total_weight = 0; 
+        min_vruntime = 0xFFFFFFFF;
+        min_proc = 0;
+
+      for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+        if(p->state != RUNNABLE)
+          continue;
+        if(p->vruntime < min_vruntime){
+          min_vruntime = p->vruntime;
+          min_proc = p;
+        }
+        total_weight += p->weight;
+      }
     }
 
     release(&ptable.lock);
@@ -486,19 +505,26 @@ wakeup1(void *chan)
 {
   struct proc *p;
   int run_flag = 0;
+  uint min_vruntime = 0xFFFFFFFF;
+  
 
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-    if(p->state == RUNNABLE) {
+    if(p->chan == chan) continue;
+    if(p->state == RUNNABLE){
       run_flag = 1;
-      break;
+      if(p->vruntime < min_vruntime ) min_vruntime = p->vruntime;
     }
   }
 
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
     if(p->state == SLEEPING && p->chan == chan){
       p->state = RUNNABLE;
+      
       // Update vruntime when the process is woken up
-      if(run_flag == 1) p->vruntime = 1000 * (weight[20] / p->weight); // Update vruntime
+      if(run_flag == 1){
+        p->vruntime = min_vruntime -  (1000 * (weight[20] / p->weight)); // Update vruntime
+        cprintf("wakeup1: %s\n min_vruntime: %p\n", p->name, min_vruntime);
+      }
       else p->vruntime = 0;
     }
 }
